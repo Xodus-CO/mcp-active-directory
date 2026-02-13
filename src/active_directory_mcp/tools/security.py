@@ -321,7 +321,14 @@ class SecurityTools(BaseTool):
             if not domain_results:
                 raise Exception("Could not retrieve domain password policy")
 
-            max_pwd_age = self._get_attr_value(domain_results[0]['attributes'], 'maxPwdAge', 0)
+            max_pwd_age_raw = self._get_attr_value(domain_results[0]['attributes'], 'maxPwdAge', 0)
+
+            # Convert timedelta to FILETIME integer if needed
+            if isinstance(max_pwd_age_raw, timedelta):
+                # Convert timedelta to 100-nanosecond intervals (negative for AD)
+                max_pwd_age = int(max_pwd_age_raw.total_seconds() * 10000000)
+            else:
+                max_pwd_age = max_pwd_age_raw if max_pwd_age_raw is not None else 0
 
             # Search for users
             user_results = self.ldap.search(
@@ -338,8 +345,19 @@ class SecurityTools(BaseTool):
 
             for entry in user_results:
                 uac = self._get_attr_value(entry['attributes'], 'userAccountControl', 0)
-                pwd_last_set = self._get_attr_value(entry['attributes'], 'pwdLastSet', 0)
-                account_expires = self._get_attr_value(entry['attributes'], 'accountExpires', 0)
+                pwd_last_set_raw = self._get_attr_value(entry['attributes'], 'pwdLastSet', 0)
+                account_expires_raw = self._get_attr_value(entry['attributes'], 'accountExpires', 0)
+
+                # Convert datetime objects to FILETIME integers if needed
+                if isinstance(pwd_last_set_raw, datetime):
+                    pwd_last_set = self._convert_datetime_to_filetime(pwd_last_set_raw)
+                else:
+                    pwd_last_set = pwd_last_set_raw if pwd_last_set_raw is not None else 0
+
+                if isinstance(account_expires_raw, datetime):
+                    account_expires = self._convert_datetime_to_filetime(account_expires_raw)
+                else:
+                    account_expires = account_expires_raw if account_expires_raw is not None else 0
 
                 user_violations = []
 
@@ -599,6 +617,12 @@ class SecurityTools(BaseTool):
     
     def _convert_datetime_to_filetime(self, dt: datetime) -> int:
         """Convert datetime to Windows FILETIME."""
+        from datetime import timezone
+
+        # If dt is timezone-aware, convert to UTC and make naive
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+
         epoch = datetime(1601, 1, 1)
         delta = dt - epoch
         return int(delta.total_seconds() * 10000000)
