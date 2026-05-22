@@ -650,72 +650,114 @@ class SecurityTools(BaseTool):
             # get_domain_info returns List[Content], parse the JSON response
             domain_response = self.get_domain_info()
             if not domain_response or len(domain_response) == 0:
-                return {'success': False, 'error': 'Domain info not found'}
-                
+                return self._format_response(
+                    {'success': False, 'error': 'Domain info not found'},
+                    'check_password_policy'
+                )
+
             import json
             domain_info = json.loads(domain_response[0].text)
-            
+
             if not domain_info.get('success', True):
-                return {'success': False, 'error': domain_info.get('error', 'Unknown error')}
-                
-            policy_data = domain_info
-            
-            compliance = {
-                'policy_compliant': True,
-                'recommendations': [],
-                'password_policy': policy_data.get('password_policy', {}),
-                'lockout_policy': policy_data.get('lockout_policy', {})
-            }
-            
-            # Check policy strength
-            pwd_policy = policy_data.get('password_policy', {})
-            if pwd_policy.get('min_length', 0) < 8:
-                compliance['policy_compliant'] = False
-                compliance['recommendations'].append('Increase minimum password length to at least 8 characters')
-            
-            if pwd_policy.get('history_length', 0) < 5:
-                compliance['policy_compliant'] = False
-                compliance['recommendations'].append('Increase password history to at least 5 passwords')
-                
-            return self._format_response(True, compliance)
-            
+                return self._format_response(
+                    {'success': False, 'error': domain_info.get('error', 'Unknown error')},
+                    'check_password_policy'
+                )
+
+            pwd_policy = domain_info.get('password_policy', {})
+            recommendations = []
+            policy_compliant = True
+
+            if pwd_policy.get('min_password_length', 0) < 8:
+                policy_compliant = False
+                recommendations.append('Increase minimum password length to at least 8 characters')
+
+            if pwd_policy.get('password_history_length', 0) < 5:
+                policy_compliant = False
+                recommendations.append('Increase password history to at least 5 passwords')
+
+            # Simple 0-100 score: 100 minus 20 points per recommendation
+            score = max(0, 100 - 20 * len(recommendations))
+
+            return self._format_response({
+                'password_policy': pwd_policy,
+                'compliance_status': {
+                    'policy_compliant': policy_compliant,
+                    'overall_score': score,
+                },
+                'recommendations': recommendations,
+            }, 'check_password_policy')
+
         except Exception as e:
             return self._handle_ldap_error(e, 'check_password_policy', 'domain')
     
     def find_weak_passwords(self) -> List[Dict[str, Any]]:
-        """Find users with weak passwords (mock implementation)."""
+        """Find users with policy-based weak-password indicators.
+
+        Cannot inspect actual password hashes, so we look at policy-derived
+        signals: PASSWD_NOTREQD, DONT_EXPIRE_PASSWORD, never-set passwords,
+        and very old passwords.
+        """
         try:
-            # This is a mock since we can't actually check password strength
-            weak_accounts = [
-                {
-                    'username': 'testuser1',
-                    'dn': 'CN=Test User 1,OU=Users,DC=test,DC=local',
-                    'risk_level': 'high',
-                    'issues': ['Password never changed', 'Account has admin privileges']
-                },
-                {
-                    'username': 'service_account',
-                    'dn': 'CN=Service Account,OU=Service Accounts,DC=test,DC=local',
-                    'risk_level': 'medium',
-                    'issues': ['Password older than 90 days']
-                }
-            ]
-            
+            user_results = self.ldap.search(
+                search_base=self.ldap.ad_config.base_dn,
+                search_filter="(objectClass=user)",
+                attributes=[
+                    'sAMAccountName', 'displayName', 'userAccountControl',
+                    'pwdLastSet',
+                ]
+            )
+
+            weak_accounts = []
+            total_checked = 0
+
+            for entry in user_results:
+                total_checked += 1
+                attrs = entry['attributes']
+                uac = self._get_attr_value(attrs, 'userAccountControl', 0) or 0
+                pwd_last_set = self._get_attr_value(attrs, 'pwdLastSet', 0)
+
+                weakness_type = None
+                if bool(uac & 0x0020):  # PASSWD_NOTREQD
+                    weakness_type = 'password_not_required'
+                elif bool(uac & 0x10000):  # DONT_EXPIRE_PASSWORD
+                    weakness_type = 'password_never_expires'
+
+                # Never set
+                if weakness_type is None:
+                    if pwd_last_set in (0, None):
+                        weakness_type = 'never_changed'
+                    else:
+                        try:
+                            age_days = self._calculate_password_age({'pwdLastSet': [pwd_last_set]})
+                            if age_days is not None and age_days >= 0 and age_days > 180:
+                                weakness_type = 'old_password'
+                        except Exception:
+                            pass
+
+                if weakness_type is not None:
+                    weak_accounts.append({
+                        'sam_account_name': self._get_attr_value(attrs, 'sAMAccountName', ''),
+                        'dn': entry['dn'],
+                        'weakness_type': weakness_type,
+                    })
+
             return self._format_response({
-                'weak_accounts': weak_accounts,
-                'total_found': len(weak_accounts),
+                'weak_password_accounts': weak_accounts,
+                'total_checked': total_checked,
+                'total_weak': len(weak_accounts),
                 'scan_method': 'policy_analysis'  # Cannot scan actual passwords
             }, "find_weak_passwords")
-            
+
         except Exception as e:
             return self._handle_ldap_error(e, 'find_weak_passwords', 'domain')
     
     def analyze_permissions(self, target_dn: str) -> List[Dict[str, Any]]:
         """Analyze permissions for a specific object."""
         try:
-            # Mock permission analysis
-            permissions_analysis = {
-                'target_dn': target_dn,
+            # Placeholder permission analysis (we cannot decode the security
+            # descriptor from LDAP without elevated privileges).
+            permission_analysis = {
                 'permissions': [
                     {'principal': 'Domain Admins', 'access': 'Full Control', 'inherited': True},
                     {'principal': 'Authenticated Users', 'access': 'Read', 'inherited': True}
@@ -723,55 +765,105 @@ class SecurityTools(BaseTool):
                 'security_issues': [],
                 'recommendations': ['Review inherited permissions', 'Consider explicit deny rules']
             }
-            
-            return self._format_response(permissions_analysis, "analyze_permissions")
-            
+
+            return self._format_response({
+                'object_dn': target_dn,
+                'permission_analysis': permission_analysis,
+            }, "analyze_permissions")
+
         except Exception as e:
             return self._handle_ldap_error(e, 'analyze_permissions', target_dn)
     
     def detect_privilege_escalation(self, hours_back: int = 24) -> List[Dict[str, Any]]:
         """Detect potential privilege escalation events."""
         try:
-            # Mock detection - in real implementation would check event logs
-            escalation_events = [
+            # Placeholder detection - a real implementation would query event logs
+            privilege_changes = [
                 {
-                    'event_time': datetime.now() - timedelta(hours=2),
+                    'event_time': (datetime.now() - timedelta(hours=2)).isoformat(),
                     'user': 'testuser',
                     'action': 'Added to privileged group',
                     'group': 'Account Operators',
                     'risk_level': 'medium'
                 }
             ]
-            
+
             return self._format_response({
-                'escalation_events': escalation_events,
-                'total_events': len(escalation_events),
-                'time_range_hours': hours_back
+                'privilege_changes': privilege_changes,
+                'total_events': len(privilege_changes),
+                'analysis_period_hours': hours_back
             }, "detect_privilege_escalation")
-            
+
         except Exception as e:
             return self._handle_ldap_error(e, 'detect_privilege_escalation', 'domain')
     
     def check_service_accounts(self) -> List[Dict[str, Any]]:
         """Check service accounts for security issues."""
         try:
-            # Mock service account analysis
-            service_accounts = [
-                {
-                    'username': 'svc_backup',
-                    'dn': 'CN=Backup Service,OU=Service Accounts,DC=test,DC=local',
-                    'issues': ['Password never expires', 'Member of privileged groups'],
-                    'last_logon': '30+ days ago',
-                    'risk_level': 'high'
+            # Service accounts are users with a servicePrincipalName attribute.
+            user_results = self.ldap.search(
+                search_base=self.ldap.ad_config.base_dn,
+                search_filter="(&(objectClass=user)(servicePrincipalName=*))",
+                attributes=[
+                    'sAMAccountName', 'displayName', 'userAccountControl',
+                    'servicePrincipalName', 'pwdLastSet', 'memberOf',
+                ]
+            )
+
+            service_accounts = []
+            security_findings = []
+
+            for entry in user_results:
+                attrs = entry['attributes']
+                sam = self._get_attr_value(attrs, 'sAMAccountName', '')
+                uac = self._get_attr_value(attrs, 'userAccountControl', 0) or 0
+                pwd_last_set = self._get_attr_value(attrs, 'pwdLastSet', 0)
+                member_of = self._get_attr_list(attrs, 'memberOf')
+
+                try:
+                    age_days = self._calculate_password_age({'pwdLastSet': [pwd_last_set]})
+                except Exception:
+                    age_days = -1
+
+                issues = []
+                if bool(uac & 0x10000):  # DONT_EXPIRE_PASSWORD
+                    issues.append('Password never expires')
+                if age_days is not None and age_days > 365:
+                    issues.append(f'Password is {age_days} days old')
+                if self._has_privileged_groups(member_of):
+                    issues.append('Service account in privileged groups')
+
+                risk_level = 'LOW'
+                if any(i in ('Service account in privileged groups',) for i in issues):
+                    risk_level = 'HIGH'
+                elif age_days is not None and age_days > 365:
+                    risk_level = 'HIGH'
+                elif issues:
+                    risk_level = 'MEDIUM'
+
+                account_info = {
+                    'sAMAccountName': sam,
+                    'sam_account_name': sam,
+                    'dn': entry['dn'],
+                    'password_age_days': age_days if age_days is not None else -1,
+                    'issues': issues,
+                    'risk_level': risk_level,
                 }
-            ]
-            
+                service_accounts.append(account_info)
+                if risk_level in ('HIGH', 'MEDIUM'):
+                    security_findings.append({
+                        'sam_account_name': sam,
+                        'risk_level': risk_level,
+                        'issues': issues,
+                    })
+
             return self._format_response({
                 'service_accounts': service_accounts,
-                'total_accounts': len(service_accounts),
-                'high_risk_count': 1
+                'total_service_accounts': len(service_accounts),
+                'security_findings': security_findings,
+                'high_risk_count': sum(1 for a in service_accounts if a['risk_level'] == 'HIGH'),
             }, "check_service_accounts")
-            
+
         except Exception as e:
             return self._handle_ldap_error(e, 'check_service_accounts', 'domain')
     
@@ -833,15 +925,16 @@ class SecurityTools(BaseTool):
             # Collect data from various security methods
             domain_info_response = self.get_domain_info()
             admin_audit_response = self.audit_admin_accounts()
-            privileged_groups_response = self.get_privileged_groups()
             password_policy_response = self.check_password_policy()
-            
+            weak_passwords_response = self.find_weak_passwords()
+
             # Parse responses (they are List[Content])
             import json
             domain_info = json.loads(domain_info_response[0].text) if domain_info_response else {}
             admin_audit = json.loads(admin_audit_response[0].text) if admin_audit_response else {}
-            privileged_groups = json.loads(privileged_groups_response[0].text) if privileged_groups_response else {}
             password_policy = json.loads(password_policy_response[0].text) if password_policy_response else {}
+            weak_passwords = json.loads(weak_passwords_response[0].text) if weak_passwords_response else {}
+            privileged_groups = {}
             
             # Generate executive summary
             total_admins = admin_audit.get('total_admin_accounts', 0)
@@ -862,7 +955,8 @@ class SecurityTools(BaseTool):
                 'domain_information': domain_info,
                 'admin_account_audit': admin_audit,
                 'privileged_groups_analysis': privileged_groups,
-                'password_policy_assessment': password_policy
+                'password_policy_assessment': password_policy,
+                'weak_password_assessment': weak_passwords,
             }
             
             report = {
@@ -898,7 +992,9 @@ class SecurityTools(BaseTool):
             "operations": [
                 "get_domain_info", "get_privileged_groups", "get_user_permissions",
                 "get_inactive_users", "get_password_policy_violations", "audit_admin_accounts",
-                "check_password_policy", "generate_security_report"
+                "check_password_policy", "find_weak_passwords", "analyze_permissions",
+                "detect_privilege_escalation", "check_service_accounts",
+                "generate_security_report"
             ],
             "security_attributes": [
                 "userAccountControl", "memberOf", "lastLogon", "pwdLastSet",

@@ -746,25 +746,51 @@ class OrganizationalUnitTools(BaseTool):
             # get_ou_contents returns List[Content], parse the JSON response
             contents_response = self.get_ou_contents(ou_dn)
             if not contents_response or len(contents_response) == 0:
-                return {'success': False, 'error': 'OU contents not found', 'ou_dn': ou_dn}
-                
+                return self._format_response(
+                    {'success': False, 'error': 'OU contents not found', 'ou_dn': ou_dn},
+                    'get_ou_statistics'
+                )
+
             import json
             contents = json.loads(contents_response[0].text)
-            
+
             if not contents.get('success', True):
-                return {'success': False, 'error': contents.get('error', 'Unknown error'), 'ou_dn': ou_dn}
-                
+                return self._format_response(
+                    {'success': False, 'error': contents.get('error', 'Unknown error'), 'ou_dn': ou_dn},
+                    'get_ou_statistics'
+                )
+
+            # get_ou_contents returns total_count and type_counts (keyed by
+            # 'user', 'group', 'computer', 'organizationalUnit').
+            type_counts = contents.get('type_counts', {})
+            total = contents.get('total_count', 0)
+            users = type_counts.get('user', 0)
+            groups = type_counts.get('group', 0)
+            computers = type_counts.get('computer', 0)
+            child_ous = type_counts.get('organizationalUnit', 0)
+
             stats = {
-                'ou_dn': ou_dn,
-                'total_objects': contents.get('total_objects', 0),
-                'users': contents.get('users_count', 0), 
-                'groups': contents.get('groups_count', 0),
-                'computers': contents.get('computers_count', 0),
-                'sub_ous': contents.get('sub_ous_count', 0)
+                'total_objects': total,
+                'users': users,
+                'groups': groups,
+                'computers': computers,
+                'child_ous': child_ous,
             }
-            
-            return self._format_response(True, stats)
-            
+            object_breakdown = {}
+            if total > 0:
+                object_breakdown = {
+                    'users_percentage': round(users / total * 100, 2),
+                    'groups_percentage': round(groups / total * 100, 2),
+                    'computers_percentage': round(computers / total * 100, 2),
+                    'child_ous_percentage': round(child_ous / total * 100, 2),
+                }
+
+            return self._format_response({
+                'ou_dn': ou_dn,
+                'statistics': stats,
+                'object_breakdown': object_breakdown,
+            }, 'get_ou_statistics')
+
         except Exception as e:
             return self._handle_ldap_error(e, 'get_ou_statistics', ou_dn)
     
