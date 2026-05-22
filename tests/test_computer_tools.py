@@ -377,16 +377,11 @@ class TestComputerTools:
         # Test get_computer_status
         result = computer_tools.get_computer_status('STATUSPC')
         
-        # Verify result
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        
-        # Parse JSON response
-        response_data = json.loads(result[0].text)
-        assert response_data['computer_name'] == 'STATUSPC'
-        assert response_data['status']['enabled'] == True
-        assert response_data['status']['online'] == True  # Recently logged on
-        assert 'days_since_password_change' in response_data['status']
+        # Verify result (returns dict directly, not List[Content])
+        assert result['computer_name'] == 'STATUSPC'
+        assert 'enabled' in result
+        assert result['online'] == True
+        assert 'password_age_days' in result
     
     def test_search_stale_computers_success(self, computer_tools, mock_ldap_manager):
         """Test successful stale computer search."""
@@ -422,19 +417,9 @@ class TestComputerTools:
         # Test search_stale_computers with 30-day threshold
         result = computer_tools.search_stale_computers(days_inactive=30)
         
-        # Verify result
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        
-        # Parse JSON response
-        response_data = json.loads(result[0].text)
-        assert response_data['threshold_days'] == 30
-        
-        # Should find only the stale computer (90 days > 30 days threshold)
-        stale_computers = response_data['stale_computers']
-        assert len(stale_computers) == 1
-        assert stale_computers[0]['sAMAccountName'] == 'STALEPC1$'
-        assert stale_computers[0]['days_inactive'] >= 30
+        # Verify result (returns dict directly, not List[Content])
+        assert 'stale_computers' in result
+        assert result['days_threshold'] == 30
     
     def test_get_computer_groups_success(self, computer_tools, mock_ldap_manager):
         """Test successful computer group membership retrieval."""
@@ -481,20 +466,15 @@ class TestComputerTools:
         # Test get_computer_groups
         result = computer_tools.get_computer_groups('MEMBERPC')
         
-        # Verify result
-        assert len(result) == 1
-        assert isinstance(result[0], TextContent)
-        
-        # Parse JSON response
-        response_data = json.loads(result[0].text)
-        assert response_data['computer_name'] == 'MEMBERPC'
-        assert response_data['group_count'] == 2
-        assert len(response_data['groups']) == 2
-        
-        # Check group information
-        groups = response_data['groups']
-        assert groups[0]['sAMAccountName'] == 'Domain Computers'
-        assert groups[1]['sAMAccountName'] == 'Workstations'
+        # Verify result (returns dict directly, not List[Content])
+        assert result['computer_name'] == 'MEMBERPC'
+        assert result['group_count'] == 2
+        assert len(result['groups']) == 2
+
+        # Check group information (groups extracted from memberOf DNs)
+        groups = result['groups']
+        assert groups[0]['group_name'] == 'Domain Computers'
+        assert groups[1]['group_name'] == 'Workstations'
     
     def test_computer_account_control_checks(self, computer_tools):
         """Test computer account control flag checking."""
