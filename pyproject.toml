@@ -28,13 +28,11 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp @ git+https://github.com/modelcontextprotocol/python-sdk.git",
+    "mcp>=1.0.0",
     "ldap3>=2.9.1,<3.0.0",
-    "requests>=2.31.0,<3.0.0",
     "pydantic>=2.0.0,<3.0.0",
-    "fastmcp>=0.2.0",
-    "asgiref>=3.7.0",
-    "cryptography>=41.0.0,<42.0.0",
+    "fastmcp>=2.0.0",
+    "cryptography>=41.0.0",
     "python-dateutil>=2.8.0,<3.0.0",
 ]
 
@@ -45,20 +43,13 @@ dev = [
     "mypy>=1.0.0,<2.0.0",
     "pytest-asyncio>=0.21.0,<0.22.0",
     "ruff>=0.1.0,<0.2.0",
-    "types-requests>=2.31.0,<3.0.0",
     "pytest-mock>=3.11.0,<4.0.0",
-]
-django = [
-    "django>=4.0.0,<5.0.0",
-    "djangorestframework>=3.14.0",
-    "pyjwt>=2.8.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/alpadalar/ActiveDirectoryMCP"
-Documentation = "https://github.com/alpadalar/ActiveDirectoryMCP#readme"
-Repository = "https://github.com/alpadalar/ActiveDirectoryMCP.git"
-Issues = "https://github.com/alpadalar/ActiveDirectoryMCP/issues"
+Homepage = "https://github.com/Xodus-CO/mcp-active-directory"
+Repository = "https://github.com/Xodus-CO/mcp-active-directory.git"
+Upstream = "https://github.com/alpadalar/ActiveDirectoryMCP"
 
 [project.scripts]
 activedirectory-mcp = "active_directory_mcp.server:main"
